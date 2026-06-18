@@ -1,0 +1,48 @@
+gui:
+  env:
+    UV_PYTHON_INSTALL_DIR: '$RUNE_DATADIR/python/python'
+    UV_PYTHON_BIN_DIR:     '$RUNE_DATADIR/python/bin'
+    UV_PYTHON_CACHE_DIR:   '$RUNE_DATADIR/python/cache/python'
+    UV_CACHE_DIR:          '$RUNE_DATADIR/python/cache/uv'
+    UV_TOOL_DIR:           '$RUNE_DATADIR/python/tools'
+    UV_TOOL_BIN_DIR:       '$RUNE_DATADIR/python/bin'
+    # Force the uv-managed interpreter; never fall through to a system Python.
+    UV_PYTHON_PREFERENCE:  'only-managed'
+    # Allow first-run `uv python install` to fetch (set explicitly so a
+    # user/global `never` cannot break first run).
+    UV_PYTHON_DOWNLOADS:   'automatic'
+    # Ensure the managed python executable is installed into UV_PYTHON_BIN_DIR
+    # so the PATH shim exists.
+    UV_PYTHON_INSTALL_BIN: '1'
+    PATH: '$RUNE_DATADIR/python/bin:$RUNE_DATADIR/bin:$PATH'
+extensions:
+  python:
+    path: '$RUNE_DATADIR/bin/extension_python'
+    config:
+      command: "ty server"
+      alternate_commands:
+        textDocument/formatting: "ruff server"
+        textDocument/rangeFormatting: "ruff server"
+        textDocument/codeAction: "ruff server"
+      lsp_path: ""
+command:
+  aliases:
+    ipython: "terminalnewtab uv run --with ipython ipython"
+debugger:
+  python:
+    command: "uvx --from debugpy==1.8.17 python -m debugpy.adapter --host {host} --port {port}"
+    adapter_id: "debugpy"
+    launch:
+      request: "launch"
+      type: "python"
+      console: "internalConsole"
+    attach:
+      request: "attach"
+      type: "python"
+editor:
+  icons:
+    .py: 󰌠
+  comments:
+    python:
+      line:
+        - "#"
