@@ -1,8 +1,8 @@
-SRC=tree-sitter-python rune
-LIB=$(wildcard pkg/**/*) $(wildcard pkg/*) pkg
+SRC=tree-sitter-python nvim-treesitter rune
+PKG_STAMP=.pkg.stamp
 TAR=python.tar.gz
 NOTARIZE_ZIP=python-notarize.zip
-GTAR=gtar
+GTAR=$(if $(filter Darwin,$(UNAME)),gtar,tar)
 CODESIGN_IDENTITY=Developer ID Application: Unstable Build, LLC. (YYZRWD888J)
 NOTARY_PROFILE=notary-profile
 UNAME=$(shell uname)
@@ -61,8 +61,10 @@ DIST_TARGETS := \
 	dist-staging-darwin-arm64 dist-staging-darwin-amd64 \
 	dist-staging-linux-arm64  dist-staging-linux-amd64
 
-.PHONY: $(DIST_TARGETS) clean sign notarize notary-credentials toolchain test
+.PHONY: $(DIST_TARGETS) clean sign notarize notary-credentials toolchain test pkg
 default: $(TAR)
+
+pkg: $(PKG_STAMP)
 
 # Stage the Astral toolchain into pkg/bin (uv/uvx/ruff/ty) for the target
 # os/arch. debugpy is not staged (resolved at runtime via uvx; see above).
@@ -89,7 +91,7 @@ toolchain:
 	install -m 0755 scripts/pip-shim.sh pkg/bin/pip3
 	install -m 0755 scripts/pip-shim.sh pkg/bin/pip2
 
-$(LIB): $(SRC) toolchain
+$(PKG_STAMP): $(SRC) config.yaml scripts/pip-shim.sh toolchain
 	@mkdir -p pkg/bin pkg/lib
 ifeq ($(HOST_OS),darwin)
 	cd tree-sitter-python && cc -o parser.so -I./src src/*.c -Os -bundle -arch arm64 -arch x86_64
@@ -103,9 +105,10 @@ endif
 	cp nvim-treesitter/queries/python/folds.scm pkg/lib
 	cd rune && CGO_ENABLED=$(CGO_ENABLED) GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -o $(PWD)/pkg/bin/extension_python ./cmd/extension_python
 	cp config.yaml pkg
+	@touch $(PKG_STAMP)
 
 ifeq ($(UNAME),Darwin)
-sign: $(LIB)
+sign: $(PKG_STAMP)
 	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" pkg/bin/uv
 	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" pkg/bin/uvx
 	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" pkg/bin/ruff
@@ -119,14 +122,14 @@ $(NOTARIZE_ZIP): sign
 notarize: $(NOTARIZE_ZIP)
 	xcrun notarytool submit $(NOTARIZE_ZIP) --keychain-profile "$(NOTARY_PROFILE)" --wait
 else
-sign: $(LIB)
+sign: $(PKG_STAMP)
 	@echo "Skipping codesign (not on macOS)"
 
 notarize: sign
 	@echo "Skipping notarization (not on macOS)"
 endif
 
-$(TAR): $(LIB) sign
+$(TAR): $(PKG_STAMP) sign
 	cd pkg && $(GTAR) --no-xattrs --no-acls -czvf ../$(TAR) .
 
 # Verify release-tarball properties (no .go source leaks, etc).
@@ -146,6 +149,7 @@ $(DIST_TARGETS): dist-%:
 	@env=$$(echo $* | cut -d- -f1); \
 	 os=$$(echo $*  | cut -d- -f2); \
 	 arch=$$(echo $* | cut -d- -f3); \
+	 set -e; \
 	 if [ "$$os" != "$(HOST_OS)" ]; then \
 	   echo "error: $@ targets OS '$$os' but host OS is '$(HOST_OS)'; build $$os releases on a $$os machine" >&2; \
 	   exit 1; \
@@ -161,4 +165,5 @@ notary-credentials:
 clean:
 	rm -rf $(TAR)
 	rm -rf $(NOTARIZE_ZIP)
+	rm -rf $(PKG_STAMP)
 	rm -rf pkg/
