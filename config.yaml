@@ -1,11 +1,15 @@
 gui:
   env:
     UV_PYTHON_INSTALL_DIR: '$RUNE_DATADIR/python/python'
-    UV_PYTHON_BIN_DIR:     '$RUNE_DATADIR/python/bin'
+    # uv's interpreter links and tool bins live in python/uvbin;
+    # python/bin is owned by Rune's venv-aware python/python3 shims
+    # (written by extension_python), which stay first on PATH and fall
+    # back to uvbin's managed interpreter.
+    UV_PYTHON_BIN_DIR:     '$RUNE_DATADIR/python/uvbin'
     UV_PYTHON_CACHE_DIR:   '$RUNE_DATADIR/python/cache/python'
     UV_CACHE_DIR:          '$RUNE_DATADIR/python/cache/uv'
     UV_TOOL_DIR:           '$RUNE_DATADIR/python/tools'
-    UV_TOOL_BIN_DIR:       '$RUNE_DATADIR/python/bin'
+    UV_TOOL_BIN_DIR:       '$RUNE_DATADIR/python/uvbin'
     # Force the uv-managed interpreter; never fall through to a system Python.
     UV_PYTHON_PREFERENCE:  'only-managed'
     # Allow first-run `uv python install` to fetch (set explicitly so a
@@ -14,7 +18,7 @@ gui:
     # Ensure the managed python executable is installed into UV_PYTHON_BIN_DIR
     # so the PATH shim exists.
     UV_PYTHON_INSTALL_BIN: '1'
-    PATH: '$RUNE_DATADIR/python/bin:$RUNE_DATADIR/bin:$PATH'
+    PATH: '$RUNE_DATADIR/python/bin:$RUNE_DATADIR/bin:$RUNE_DATADIR/python/uvbin:$PATH'
 extensions:
   python:
     path: '$RUNE_DATADIR/bin/extension_python'
@@ -25,6 +29,11 @@ extensions:
         textDocument/rangeFormatting: "ruff server"
         textDocument/codeAction: "ruff server"
       lsp_path: ""
+      # debugpy version prewarmed into uvx's cache after env sync so the
+      # first debug launch works offline. Keep in sync with the pin in
+      # debugger.python.command and the Makefile's DEBUGPY_VERSION
+      # (scripts/test.sh enforces agreement).
+      debugpy: "1.8.17"
 command:
   aliases:
     ipython: "terminalnewtab uv run --with ipython ipython"
@@ -36,6 +45,11 @@ debugger:
       request: "launch"
       type: "python"
       console: "internalConsole"
+      # Run the debuggee through Rune's venv-aware shim instead of the
+      # adapter's ephemeral uvx interpreter: debugpy defaults cwd to the
+      # program's directory, so the shim resolves the nearest enclosing
+      # project venv per launch (monorepo-correct).
+      python: '$RUNE_DATADIR/python/bin/python3'
     attach:
       request: "attach"
       type: "python"

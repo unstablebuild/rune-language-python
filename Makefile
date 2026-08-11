@@ -9,7 +9,11 @@ UNAME=$(shell uname)
 
 # Pinned Astral toolchain versions (downloaded per target os/arch). No CPython
 # is bundled; `uv python install` provisions the interpreter at first run,
-# confined to $RUNE_DATADIR/python via config.yaml gui.env.
+# confined to $RUNE_DATADIR/python via config.yaml gui.env. Interpreter links
+# and uv tool bins land in $RUNE_DATADIR/python/uvbin (UV_PYTHON_BIN_DIR /
+# UV_TOOL_BIN_DIR); $RUNE_DATADIR/python/bin holds Rune's venv-aware
+# python/python3 shims, written by extension_python at bootstrap, which stay
+# first on PATH and fall back to uvbin's managed interpreter.
 UV_VERSION=0.11.22
 RUFF_VERSION=0.15.18
 TY_VERSION=0.0.51
@@ -18,7 +22,8 @@ TY_VERSION=0.0.51
 # the uv-managed interpreter installed at first run. The DAP command in
 # config.yaml resolves it at first debug via `uvx --from debugpy==$(DEBUGPY_VERSION)`,
 # isolated in its own uv env and confined by the UV_* gui.env. Keep this in sync
-# with the version pinned in config.yaml's debugger.python.command.
+# with the pins in config.yaml's debugger.python.command and
+# extensions.python.config.debugpy (scripts/test.sh enforces agreement).
 DEBUGPY_VERSION=1.8.17
 
 # Releases are always built on a machine running the target OS (Linux releases
