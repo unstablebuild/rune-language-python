@@ -53,6 +53,13 @@ debugger:
     attach:
       request: "attach"
       type: "python"
+    # To debug an already-running program, start it under debugpy:
+    #   uv run --with debugpy==1.8.17 python -m debugpy \
+    #     --listen 127.0.0.1:5678 app.py
+    # then attach to the listening adapter from Rune:
+    #   debugger attach python connect://127.0.0.1:5678
+    # The endpoint is per session; do not put it in `command`, which
+    # would break `debugger launch`.
 editor:
   icons:
     .py: 󰌠
