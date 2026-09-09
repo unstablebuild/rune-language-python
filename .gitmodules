@@ -6,4 +6,4 @@
 	url = git@github.com:nvim-treesitter/nvim-treesitter.git
 [submodule "rune"]
 	path = rune
-	url = git@git.unstable.build:unstablebuild/rune.git
+	url = git@github.com:unstablebuild/rune.git
