@@ -1,24 +1,23 @@
 gui:
   env:
     UV_PYTHON_INSTALL_DIR: '$RUNE_DATADIR/python/python'
-    # uv's interpreter links and tool bins live in python/uvbin;
+    # uv's interpreter links live in python/uvbin, which is deliberately
+    # kept off PATH so the managed interpreter never shadows the user's.
     # python/bin is owned by Rune's venv-aware python/python3 shims
-    # (written by extension_python), which stay first on PATH and fall
-    # back to uvbin's managed interpreter.
+    # (written by extension_python), which stay first on PATH and defer
+    # to the venv, then the user's interpreter, then uvbin.
     UV_PYTHON_BIN_DIR:     '$RUNE_DATADIR/python/uvbin'
     UV_PYTHON_CACHE_DIR:   '$RUNE_DATADIR/python/cache/python'
     UV_CACHE_DIR:          '$RUNE_DATADIR/python/cache/uv'
     UV_TOOL_DIR:           '$RUNE_DATADIR/python/tools'
-    UV_TOOL_BIN_DIR:       '$RUNE_DATADIR/python/uvbin'
-    # Force the uv-managed interpreter; never fall through to a system Python.
-    UV_PYTHON_PREFERENCE:  'only-managed'
+    UV_TOOL_BIN_DIR:       '$RUNE_DATADIR/python/toolbin'
     # Allow first-run `uv python install` to fetch (set explicitly so a
     # user/global `never` cannot break first run).
     UV_PYTHON_DOWNLOADS:   'automatic'
     # Ensure the managed python executable is installed into UV_PYTHON_BIN_DIR
     # so the PATH shim exists.
     UV_PYTHON_INSTALL_BIN: '1'
-    PATH: '$RUNE_DATADIR/python/bin:$RUNE_DATADIR/bin:$RUNE_DATADIR/python/uvbin:$PATH'
+    PATH: '$RUNE_DATADIR/python/bin:$RUNE_DATADIR/python/toolbin:$RUNE_DATADIR/bin:$PATH'
 extensions:
   python:
     path: '$RUNE_DATADIR/bin/extension_python'

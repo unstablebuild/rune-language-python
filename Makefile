@@ -10,10 +10,12 @@ UNAME=$(shell uname)
 # Pinned Astral toolchain versions (downloaded per target os/arch). No CPython
 # is bundled; `uv python install` provisions the interpreter at first run,
 # confined to $RUNE_DATADIR/python via config.yaml gui.env. Interpreter links
-# and uv tool bins land in $RUNE_DATADIR/python/uvbin (UV_PYTHON_BIN_DIR /
-# UV_TOOL_BIN_DIR); $RUNE_DATADIR/python/bin holds Rune's venv-aware
-# python/python3 shims, written by extension_python at bootstrap, which stay
-# first on PATH and fall back to uvbin's managed interpreter.
+# land in $RUNE_DATADIR/python/uvbin (UV_PYTHON_BIN_DIR), which is kept off
+# PATH so the managed interpreter never shadows the user's; uv tool bins land
+# in $RUNE_DATADIR/python/toolbin (UV_TOOL_BIN_DIR). $RUNE_DATADIR/python/bin
+# holds Rune's venv-aware python/python3 shims, written by extension_python at
+# bootstrap, which stay first on PATH and defer to the venv, then the user's
+# interpreter, then uvbin.
 UV_VERSION=0.11.22
 RUFF_VERSION=0.15.18
 TY_VERSION=0.0.51
