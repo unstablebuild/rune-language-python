@@ -21,16 +21,17 @@ deploy/bluectl/
 
 - `prod/*/config`    pin `auth.project-id: rune-prod`
 - `staging/*/config` pin `auth.project-id: unstable-build-blue-dev`
-- `release.collection` / `release.bucket` are set per-OS/arch to
-  `rune-release-<os>-<arch>` so uploads land in the right bucket.
+- `release.collection` is `rune-release-<os>-<arch>` in both; `release.bucket`
+  is `rune-release-<os>-<arch>` in prod and `rune-dev-<os>-<arch>` in staging,
+  so uploads land in the right bucket.
 
 Credentials are NOT committed here: bluectl falls back to the
-developer's gcloud Application Default Credentials. In CI, the Release
-workflow provides those credentials through Workload Identity Federation.
+developer's gcloud Application Default Credentials.
 
 ## Safety property
 
-The `dist-<env>-<os>-<arch>` and `upload-<env>-<os>-<arch>` make targets pass
+The `dist-<env>-<os>-<arch>` make targets (and `dist-<env>-all`, which runs
+them) pass
 `-c deploy/bluectl/<env>/<os>-<arch>` to bluectl, so the publishing
 project-id and bucket are selected by the make target rather than by
 whatever happens to be in `~/.bluectl/config`. This makes it impossible

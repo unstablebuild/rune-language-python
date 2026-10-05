@@ -7,15 +7,19 @@
 #      sources into pkg/ would ship source into the release. The payload must
 #      contain only the compiled extension_python binary, the toolchain
 #      binaries, the tree-sitter .so, the .scm queries, and config.yaml.
-#   2. The three debugpy version pins agree: the Makefile's DEBUGPY_VERSION,
+#   2. The tarball holds nothing beyond that enumerated payload, so a stray
+#      file that reaches pkg/ fails the release rather than ships.
+#   3. The three debugpy version pins agree: the Makefile's DEBUGPY_VERSION,
 #      the `uvx --from debugpy==X` pin in config.yaml's debugger.python.command,
 #      and the extensions.python.config.debugpy prewarm pin. A mismatch would
 #      prewarm one debugpy env and resolve another at first debug (defeating
 #      the offline-first prewarm).
-#   3. Every native binary (ELF or Mach-O) is built for $TARGET_OS/$TARGET_ARCH
+#   4. Every native binary (ELF or Mach-O) is built for $TARGET_OS/$TARGET_ARCH
 #      and loads on the oldest OS that docs.rune.build lists as supported:
 #      glibc 2.28 on Linux, macOS 13.3. Toolchains default to the build host's
 #      versions, so a release built on a newer host silently raises the floor.
+#      Needs file, objdump (GNU binutils, or the LLVM one Xcode ships, so a
+#      Linux tarball can be checked on macOS) and, for macOS, otool.
 set -euo pipefail
 
 TAR="${TAR:-python.tar.gz}"
@@ -40,7 +44,36 @@ fi
 
 echo "ok: no .go files in $TAR"
 
-# Guard 2: debugpy pin agreement.
+# Guard 2: only the expected members. Keep in sync with the $(PKG_STAMP) and
+# toolchain recipes in the Makefile.
+expected='./
+./bin/
+./bin/extension_python
+./bin/pip
+./bin/pip2
+./bin/pip3
+./bin/ruff
+./bin/ty
+./bin/uv
+./bin/uvx
+./config.yaml
+./lib/
+./lib/folds.scm
+./lib/highlights.scm
+./lib/indents.scm
+./lib/locals.scm
+./lib/tags.scm
+./lib/tree-sitter.so'
+unexpected="$(comm -13 <(printf '%s\n' "$expected" | sort) <(printf '%s\n' "$members" | sort))"
+if [ -n "$unexpected" ]; then
+	echo "error: $TAR contains files outside the expected payload:" >&2
+	printf '%s\n' "$unexpected" >&2
+	exit 1
+fi
+
+echo "ok: $TAR contains only the expected payload"
+
+# Guard 3: debugpy pin agreement.
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 makefile_pin="$(sed -n 's/^DEBUGPY_VERSION=//p' "$repo_root/Makefile")"
 adapter_pin="$(sed -n 's/.*uvx --from debugpy==\([0-9][0-9.]*\) .*/\1/p' "$repo_root/config.yaml")"
@@ -64,7 +97,7 @@ fi
 
 echo "ok: debugpy pins agree ($makefile_pin)"
 
-# Guard 3: target os/arch and OS version floors.
+# Guard 4: target os/arch and OS version floors.
 GLIBC_FLOOR=2.28
 MACOS_FLOOR=13.3
 
@@ -109,8 +142,8 @@ while IFS= read -r -d '' f; do
 	esac
 	if [ "$want_format" = ELF ]; then
 		# Version requirements on glibc; a static binary has none.
-		need="$(readelf -V --wide "$f" |
-			sed -n 's/.*Name: GLIBC_\([0-9][0-9.]*\).*/\1/p' |
+		need="$(objdump -p "$f" |
+			sed -n 's/.*[[:space:]]GLIBC_\([0-9][0-9.]*\)$/\1/p' |
 			sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
 		if [ -n "$need" ] && version_gt "$need" "$GLIBC_FLOOR"; then
 			echo "error: $name requires GLIBC_$need; the floor is $GLIBC_FLOOR" >&2

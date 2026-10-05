@@ -1,19 +1,18 @@
 SRC=tree-sitter-python nvim-treesitter rune
 PKG_STAMP=.pkg.stamp
 TAR=python.tar.gz
-NOTARIZE_ZIP=python-notarize.zip
 GTAR=$(if $(filter Darwin,$(UNAME)),gtar,tar)
-CODESIGN_IDENTITY=Developer ID Application: Unstable Build, LLC. (YYZRWD888J)
-NOTARY_PROFILE=notary-profile
-# notarytool credentials: the keychain profile from `make notary-credentials`
-# by default. CI overrides this with an App Store Connect API key.
-NOTARY_AUTH=--keychain-profile "$(NOTARY_PROFILE)"
 UNAME=$(shell uname)
 
 # Oldest supported macOS (docs.rune.build Prerequisites). Without an explicit
 # minimum, clang stamps the build host's SDK version into tree-sitter.so, so a
 # parser built on a new macOS refuses to load on older ones.
 MACOS_MIN_VERSION=13.3
+
+# Oldest supported glibc (docs.rune.build Prerequisites). zig cc links the
+# Linux tree-sitter.so against it, whatever glibc the build host has.
+GLIBC_MIN_VERSION=2.28
+ZIG=zig
 
 # Pinned Astral toolchain versions (downloaded per target os/arch). No CPython
 # is bundled; `uv python install` provisions the interpreter at first run,
@@ -36,24 +35,18 @@ TY_VERSION=0.0.51
 # extensions.python.config.debugpy (scripts/test.sh enforces agreement).
 DEBUGPY_VERSION=1.8.17
 
-# Releases are always built on a machine running the target OS (Linux releases
-# on Linux, macOS releases on macOS); only the architecture may be cross
-# compiled. TARGET_OS therefore always equals the host OS, while TARGET_ARCH
-# may differ to produce the other arch for the same OS.
+# macOS releases are built on macOS, whose clang builds their tree-sitter.so.
+# Linux releases build on any host: extension_python is built with cgo off,
+# the Astral tools are downloaded per target, and tree-sitter.so is cross
+# compiled with zig cc.
+#
+# Nothing is codesigned or notarized: Rune strips com.apple.quarantine from
+# installed packages, so Gatekeeper never assesses them, and arm64 binaries
+# carry the ad-hoc signature their linker adds.
 HOST_OS=$(shell uname | tr '[:upper:]' '[:lower:]')
 HOST_ARCH=$(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
-TARGET_OS=$(HOST_OS)
+TARGET_OS?=$(HOST_OS)
 TARGET_ARCH?=$(HOST_ARCH)
-
-# Cross is non-empty when building for a different arch than the host.
-CROSS=$(filter-out $(HOST_ARCH),$(TARGET_ARCH))
-
-# C compiler for the tree-sitter parser. On Linux a cross-arch build needs the
-# matching GNU cross toolchain (gcc-*-cross packages); native builds use gcc.
-# macOS builds a universal binary in one pass, so CC is unused there.
-GNU_TRIPLE_amd64=x86_64-linux-gnu
-GNU_TRIPLE_arm64=aarch64-linux-gnu
-CC=$(if $(CROSS),$(GNU_TRIPLE_$(TARGET_ARCH))-gcc,gcc)
 
 # Astral release asset arch/os naming (rust target triples).
 RUST_ARCH_amd64=x86_64
@@ -71,9 +64,9 @@ DIST_TARGETS := \
 	dist-prod-linux-arm64  dist-prod-linux-amd64  \
 	dist-staging-darwin-arm64 dist-staging-darwin-amd64 \
 	dist-staging-linux-arm64  dist-staging-linux-amd64
-UPLOAD_TARGETS := $(DIST_TARGETS:dist-%=upload-%)
+DIST_ALL_TARGETS := dist-prod-all dist-staging-all
 
-.PHONY: $(DIST_TARGETS) $(UPLOAD_TARGETS) clean sign notarize notary-credentials toolchain test pkg
+.PHONY: $(DIST_TARGETS) $(DIST_ALL_TARGETS) check-release-tag clean toolchain test pkg
 default: $(TAR)
 
 pkg: $(PKG_STAMP)
@@ -105,10 +98,10 @@ toolchain:
 
 $(PKG_STAMP): $(SRC) config.yaml scripts/pip-shim.sh toolchain
 	@mkdir -p pkg/bin pkg/lib
-ifeq ($(HOST_OS),darwin)
+ifeq ($(TARGET_OS),darwin)
 	cd tree-sitter-python && cc -o parser.so -I./src src/*.c -Os -bundle -arch arm64 -arch x86_64 -mmacosx-version-min=$(MACOS_MIN_VERSION)
 else
-	cd tree-sitter-python && $(CC) -o parser.so -I./src src/*.c -Os -shared -fPIC
+	cd tree-sitter-python && $(ZIG) cc -target $(RUST_ARCH)-linux-gnu.$(GLIBC_MIN_VERSION) -o parser.so -I./src src/*.c -Os -shared -fPIC
 endif
 	cp tree-sitter-python/parser.so pkg/lib/tree-sitter.so
 	cp tree-sitter-python/queries/highlights.scm tree-sitter-python/queries/tags.scm pkg/lib
@@ -125,32 +118,7 @@ endif
 	cp config.yaml pkg
 	@touch $(PKG_STAMP)
 
-ifeq ($(UNAME),Darwin)
-sign: $(PKG_STAMP)
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" pkg/bin/uv
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" pkg/bin/uvx
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" pkg/bin/ruff
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" pkg/bin/ty
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" pkg/bin/extension_python
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" pkg/lib/tree-sitter.so
-
-$(NOTARIZE_ZIP): sign
-	zip $(NOTARIZE_ZIP) pkg/bin/uv pkg/bin/uvx pkg/bin/ruff pkg/bin/ty pkg/bin/extension_python pkg/lib/tree-sitter.so
-
-notarize: $(NOTARIZE_ZIP)
-	@# notarytool can exit 0 for a rejected submission, so require Accepted.
-	@out=$$(xcrun notarytool submit $(NOTARIZE_ZIP) $(NOTARY_AUTH) --wait) || { echo "$$out"; exit 1; }; \
-	 echo "$$out"; \
-	 echo "$$out" | grep -Eq '^[[:space:]]*status: Accepted' || { echo "error: notarization was not accepted" >&2; exit 1; }
-else
-sign: $(PKG_STAMP)
-	@echo "Skipping codesign (not on macOS)"
-
-notarize: sign
-	@echo "Skipping notarization (not on macOS)"
-endif
-
-$(TAR): $(PKG_STAMP) sign
+$(TAR): $(PKG_STAMP)
 	cd pkg && $(GTAR) --no-xattrs --no-acls -czvf ../$(TAR) .
 
 # Verify release-tarball properties (no .go source leaks, binaries built for the
@@ -158,44 +126,41 @@ $(TAR): $(PKG_STAMP) sign
 test: $(TAR)
 	TAR=$(TAR) TARGET_OS=$(TARGET_OS) TARGET_ARCH=$(TARGET_ARCH) ./scripts/test.sh
 
-# dist-<env>-<os>-<arch>: build (cross compiling the architecture when it
-# differs from the host), sign/notarize, test, and upload via
-# upload-<env>-<os>-<arch>. Pattern stem is <env>-<os>-<arch>, e.g.
-# "prod-darwin-arm64".
-#
-# The target OS must match the host OS: Linux releases are built on Linux and
-# macOS releases on macOS. Only the architecture may be cross compiled. The
-# build is driven through a recursive make so TARGET_ARCH is set before the
-# $(TAR) prerequisite chain is evaluated.
-$(DIST_TARGETS): dist-%:
-	@os=$$(echo $*  | cut -d- -f2); \
-	 arch=$$(echo $* | cut -d- -f3); \
-	 set -e; \
-	 if [ "$$os" != "$(HOST_OS)" ]; then \
-	   echo "error: $@ targets OS '$$os' but host OS is '$(HOST_OS)'; build $$os releases on a $$os machine" >&2; \
-	   exit 1; \
-	 fi; \
-	 $(MAKE) clean; \
-	 $(MAKE) notarize $(TAR) test TARGET_ARCH=$$arch; \
-	 $(MAKE) upload-$*
+# check-release-tag aborts before any build runs when HEAD does not carry a
+# publishable release tag (clean, canonical semver, actually tagged).
+check-release-tag:
+	@./check-release-tag.sh
 
-# upload-<env>-<os>-<arch>: upload an already built $(TAR) for <os>-<arch> to
-# the bluectl project-id and bucket pinned by
-# deploy/bluectl/<env>/<os>-<arch>/config. It builds nothing, so it runs on any
-# host: CI builds each tarball on its own runner and uploads it from Linux,
-# passing TAR=<path> to the downloaded artifact.
-$(UPLOAD_TARGETS): upload-%:
+# dist-<env>-<os>-<arch>: build, test, and upload to the bluectl project-id and
+# bucket pinned by
+# deploy/bluectl/<env>/<os>-<arch>/config. Pattern stem is <env>-<os>-<arch>,
+# e.g. "prod-darwin-arm64". The build is driven through a recursive make so
+# TARGET_OS and TARGET_ARCH are set before the $(TAR) prerequisite chain is
+# evaluated.
+$(DIST_TARGETS): dist-%: check-release-tag
 	@env=$$(echo $* | cut -d- -f1); \
 	 os=$$(echo $*  | cut -d- -f2); \
 	 arch=$$(echo $* | cut -d- -f3); \
+	 set -e; \
+	 if [ "$$os" = darwin ] && [ "$(HOST_OS)" != darwin ]; then \
+	   echo "error: $@ must run on macOS" >&2; \
+	   exit 1; \
+	 fi; \
+	 $(MAKE) clean; \
+	 $(MAKE) test TARGET_OS=$$os TARGET_ARCH=$$arch; \
 	 BLUECTL_CONFIG_DIR=$(BLUECTL_CONFIG_ROOT)/$$env/$$os-$$arch \
-	 BLUE_TARGET_OS=$$os BLUE_TARGET_ARCH=$$arch BLUE_RELEASE_TAR=$(TAR) ./dist.sh
+	 BLUE_TARGET_OS=$$os BLUE_TARGET_ARCH=$$arch ./dist.sh
 
-notary-credentials:
-	xcrun notarytool store-credentials "$(NOTARY_PROFILE)" --team-id "YYZRWD888J"
+# dist-<env>-all: dist-<env>-<os>-<arch> for all four targets, one after the
+# other since they share pkg/ and $(TAR). Run it on macOS, which the darwin
+# targets need. Published versions are immutable, so if a target fails, fix it
+# and run the targets that did not upload individually.
+$(DIST_ALL_TARGETS): dist-%-all: check-release-tag
+	@set -e; for target in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do \
+	   $(MAKE) dist-$*-$$target; \
+	 done
 
 clean:
 	rm -rf $(TAR)
-	rm -rf $(NOTARIZE_ZIP)
 	rm -rf $(PKG_STAMP)
 	rm -rf pkg/
