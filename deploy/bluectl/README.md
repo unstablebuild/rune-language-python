@@ -25,11 +25,12 @@ deploy/bluectl/
   `rune-release-<os>-<arch>` so uploads land in the right bucket.
 
 Credentials are NOT committed here: bluectl falls back to the
-developer's gcloud Application Default Credentials.
+developer's gcloud Application Default Credentials. In CI, the Release
+workflow provides those credentials through Workload Identity Federation.
 
 ## Safety property
 
-The `dist-<env>-<os>-<arch>` make targets pass
+The `dist-<env>-<os>-<arch>` and `upload-<env>-<os>-<arch>` make targets pass
 `-c deploy/bluectl/<env>/<os>-<arch>` to bluectl, so the publishing
 project-id and bucket are selected by the make target rather than by
 whatever happens to be in `~/.bluectl/config`. This makes it impossible

@@ -4,8 +4,8 @@ set -euo pipefail
 GIT_REMOTE_URL=$(git remote get-url origin)
 GIT_AUTHOR_EMAIL=$(git log -1 --pretty=format:'%ae')
 GIT_HEAD=$(git rev-parse HEAD)
-BLUE_RELEASE_TAR=python.tar.gz
-: "${BLUECTL_CONFIG_DIR:?BLUECTL_CONFIG_DIR is not set. Use the dist-<env>-<os>-<arch> make targets (e.g. dist-prod-darwin-arm64) so the bluectl project-id is pinned to the right environment.}"
+BLUE_RELEASE_TAR="${BLUE_RELEASE_TAR:-python.tar.gz}"
+: "${BLUECTL_CONFIG_DIR:?BLUECTL_CONFIG_DIR is not set. Use the dist-<env>-<os>-<arch> or upload-<env>-<os>-<arch> make targets (e.g. dist-prod-darwin-arm64) so the bluectl project-id is pinned to the right environment.}"
 BLUE_EXEC=(bluectl -c "$BLUECTL_CONFIG_DIR")
 OS="${BLUE_TARGET_OS:-$(uname | awk '{print tolower($0)}')}"
 ARCH="${BLUE_TARGET_ARCH:-$([ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ] && echo "arm64" || uname -m)}"
@@ -39,6 +39,13 @@ if [[ -z "${BLUE_PGP_KEYRING:-}" ]]; then
 	exit 1;
 fi
 
+BLUE_SIGN_ARGS=(-k "$BLUE_PGP_KEY" -r "$BLUE_PGP_KEYRING")
+# Optional: without it bluectl prompts on the terminal for an encrypted key,
+# which a CI job cannot answer.
+if [[ -n "${BLUE_PGP_PASSPHRASE:-}" ]]; then
+	BLUE_SIGN_ARGS+=(-p "$BLUE_PGP_PASSPHRASE")
+fi
+
 blue_release_dist() {
 	GIT_LOG=$(git log --pretty=format:"%h: %s" $GIT_LOG_RANGE)
 	printf "\n$GIT_LOG\n";
@@ -52,8 +59,7 @@ blue_release_dist() {
 		-d git-tag=$GIT_TAG -d git-head=$GIT_HEAD \
 		-d git-log="$GIT_LOG" \
 		-y \
-		-k "$BLUE_PGP_KEY" \
-		-r "$BLUE_PGP_KEYRING" python "$BLUE_RELEASE_TAG" "$BLUE_RELEASE_TAR"
+		"${BLUE_SIGN_ARGS[@]}" python "$BLUE_RELEASE_TAG" "$BLUE_RELEASE_TAR"
 }
 
 # check if HEAD is tagged; if not, use annotate with range between latest tag and HEAD

@@ -5,7 +5,15 @@ NOTARIZE_ZIP=python-notarize.zip
 GTAR=$(if $(filter Darwin,$(UNAME)),gtar,tar)
 CODESIGN_IDENTITY=Developer ID Application: Unstable Build, LLC. (YYZRWD888J)
 NOTARY_PROFILE=notary-profile
+# notarytool credentials: the keychain profile from `make notary-credentials`
+# by default. CI overrides this with an App Store Connect API key.
+NOTARY_AUTH=--keychain-profile "$(NOTARY_PROFILE)"
 UNAME=$(shell uname)
+
+# Oldest supported macOS (docs.rune.build Prerequisites). Without an explicit
+# minimum, clang stamps the build host's SDK version into tree-sitter.so, so a
+# parser built on a new macOS refuses to load on older ones.
+MACOS_MIN_VERSION=13.3
 
 # Pinned Astral toolchain versions (downloaded per target os/arch). No CPython
 # is bundled; `uv python install` provisions the interpreter at first run,
@@ -40,10 +48,6 @@ TARGET_ARCH?=$(HOST_ARCH)
 # Cross is non-empty when building for a different arch than the host.
 CROSS=$(filter-out $(HOST_ARCH),$(TARGET_ARCH))
 
-# Native builds keep cgo on to match the production release binaries. Cross-arch
-# builds disable cgo so the Go extension links without a target C toolchain.
-CGO_ENABLED=$(if $(CROSS),0,1)
-
 # C compiler for the tree-sitter parser. On Linux a cross-arch build needs the
 # matching GNU cross toolchain (gcc-*-cross packages); native builds use gcc.
 # macOS builds a universal binary in one pass, so CC is unused there.
@@ -67,8 +71,9 @@ DIST_TARGETS := \
 	dist-prod-linux-arm64  dist-prod-linux-amd64  \
 	dist-staging-darwin-arm64 dist-staging-darwin-amd64 \
 	dist-staging-linux-arm64  dist-staging-linux-amd64
+UPLOAD_TARGETS := $(DIST_TARGETS:dist-%=upload-%)
 
-.PHONY: $(DIST_TARGETS) clean sign notarize notary-credentials toolchain test pkg
+.PHONY: $(DIST_TARGETS) $(UPLOAD_TARGETS) clean sign notarize notary-credentials toolchain test pkg
 default: $(TAR)
 
 pkg: $(PKG_STAMP)
@@ -101,7 +106,7 @@ toolchain:
 $(PKG_STAMP): $(SRC) config.yaml scripts/pip-shim.sh toolchain
 	@mkdir -p pkg/bin pkg/lib
 ifeq ($(HOST_OS),darwin)
-	cd tree-sitter-python && cc -o parser.so -I./src src/*.c -Os -bundle -arch arm64 -arch x86_64
+	cd tree-sitter-python && cc -o parser.so -I./src src/*.c -Os -bundle -arch arm64 -arch x86_64 -mmacosx-version-min=$(MACOS_MIN_VERSION)
 else
 	cd tree-sitter-python && $(CC) -o parser.so -I./src src/*.c -Os -shared -fPIC
 endif
@@ -110,7 +115,13 @@ endif
 	cp nvim-treesitter/queries/python/indents.scm pkg/lib
 	cp nvim-treesitter/queries/python/locals.scm pkg/lib
 	cp nvim-treesitter/queries/python/folds.scm pkg/lib
-	cd rune && CGO_ENABLED=$(CGO_ENABLED) GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -o $(PWD)/pkg/bin/extension_python ./cmd/extension_python
+	# cgo stays off on every target: a cgo build links the build host's glibc
+	# (above the documented 2.28 floor on current distros) and on macOS stamps
+	# the host SDK as the minimum OS. The extension reaches Rune over a unix
+	# socket and resolves no hostnames; the one visible difference is that the
+	# pure-Go os/user resolves the current user from $$USER/$$HOME or
+	# /etc/passwd rather than NSS.
+	cd rune && CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -o $(PWD)/pkg/bin/extension_python ./cmd/extension_python
 	cp config.yaml pkg
 	@touch $(PKG_STAMP)
 
@@ -127,7 +138,10 @@ $(NOTARIZE_ZIP): sign
 	zip $(NOTARIZE_ZIP) pkg/bin/uv pkg/bin/uvx pkg/bin/ruff pkg/bin/ty pkg/bin/extension_python pkg/lib/tree-sitter.so
 
 notarize: $(NOTARIZE_ZIP)
-	xcrun notarytool submit $(NOTARIZE_ZIP) --keychain-profile "$(NOTARY_PROFILE)" --wait
+	@# notarytool can exit 0 for a rejected submission, so require Accepted.
+	@out=$$(xcrun notarytool submit $(NOTARIZE_ZIP) $(NOTARY_AUTH) --wait) || { echo "$$out"; exit 1; }; \
+	 echo "$$out"; \
+	 echo "$$out" | grep -Eq '^[[:space:]]*status: Accepted' || { echo "error: notarization was not accepted" >&2; exit 1; }
 else
 sign: $(PKG_STAMP)
 	@echo "Skipping codesign (not on macOS)"
@@ -139,22 +153,22 @@ endif
 $(TAR): $(PKG_STAMP) sign
 	cd pkg && $(GTAR) --no-xattrs --no-acls -czvf ../$(TAR) .
 
-# Verify release-tarball properties (no .go source leaks, etc).
+# Verify release-tarball properties (no .go source leaks, binaries built for the
+# target os/arch and within the documented OS floors, etc).
 test: $(TAR)
-	TAR=$(TAR) ./scripts/test.sh
+	TAR=$(TAR) TARGET_OS=$(TARGET_OS) TARGET_ARCH=$(TARGET_ARCH) ./scripts/test.sh
 
 # dist-<env>-<os>-<arch>: build (cross compiling the architecture when it
-# differs from the host), sign/notarize, and upload to the bluectl project-id
-# pinned by deploy/bluectl/<env>/<os>-<arch>/config. Pattern stem is
-# <env>-<os>-<arch>, e.g. "prod-darwin-arm64".
+# differs from the host), sign/notarize, test, and upload via
+# upload-<env>-<os>-<arch>. Pattern stem is <env>-<os>-<arch>, e.g.
+# "prod-darwin-arm64".
 #
 # The target OS must match the host OS: Linux releases are built on Linux and
 # macOS releases on macOS. Only the architecture may be cross compiled. The
 # build is driven through a recursive make so TARGET_ARCH is set before the
 # $(TAR) prerequisite chain is evaluated.
 $(DIST_TARGETS): dist-%:
-	@env=$$(echo $* | cut -d- -f1); \
-	 os=$$(echo $*  | cut -d- -f2); \
+	@os=$$(echo $*  | cut -d- -f2); \
 	 arch=$$(echo $* | cut -d- -f3); \
 	 set -e; \
 	 if [ "$$os" != "$(HOST_OS)" ]; then \
@@ -162,9 +176,20 @@ $(DIST_TARGETS): dist-%:
 	   exit 1; \
 	 fi; \
 	 $(MAKE) clean; \
-	 $(MAKE) notarize $(TAR) TARGET_ARCH=$$arch; \
+	 $(MAKE) notarize $(TAR) test TARGET_ARCH=$$arch; \
+	 $(MAKE) upload-$*
+
+# upload-<env>-<os>-<arch>: upload an already built $(TAR) for <os>-<arch> to
+# the bluectl project-id and bucket pinned by
+# deploy/bluectl/<env>/<os>-<arch>/config. It builds nothing, so it runs on any
+# host: CI builds each tarball on its own runner and uploads it from Linux,
+# passing TAR=<path> to the downloaded artifact.
+$(UPLOAD_TARGETS): upload-%:
+	@env=$$(echo $* | cut -d- -f1); \
+	 os=$$(echo $*  | cut -d- -f2); \
+	 arch=$$(echo $* | cut -d- -f3); \
 	 BLUECTL_CONFIG_DIR=$(BLUECTL_CONFIG_ROOT)/$$env/$$os-$$arch \
-	 BLUE_TARGET_OS=$$os BLUE_TARGET_ARCH=$$arch ./dist.sh
+	 BLUE_TARGET_OS=$$os BLUE_TARGET_ARCH=$$arch BLUE_RELEASE_TAR=$(TAR) ./dist.sh
 
 notary-credentials:
 	xcrun notarytool store-credentials "$(NOTARY_PROFILE)" --team-id "YYZRWD888J"
