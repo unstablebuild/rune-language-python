@@ -17,7 +17,9 @@ Releases are built and published from a Mac: `make dist-<env>-all` builds,
 tests and uploads all four tarballs (`darwin`/`linux` × `arm64`/`amd64`).
 
 1. **Prepare the Mac.** Install Go, `zig`, `wget`, GNU tar (`gtar`) and
-   `bluectl`.
+   `bluectl`. Signing needs the `Developer ID Application: Unstable Build,
+   LLC. (YYZRWD888J)` identity in your keychain, and notarization a
+   notarytool profile (`make notary-credentials` sets it up).
 2. **Prepare the release.** Fetch tags and submodules
    (`git fetch --tags && git submodule update --init --recursive`) and check
    out the release tag. Authenticate `bluectl` with gcloud Application Default
@@ -34,23 +36,26 @@ tests and uploads all four tarballs (`darwin`/`linux` × `arm64`/`amd64`).
 `dist-<env>-all` runs `dist-<env>-<os>-<arch>` for each target, one after the
 other. Each one first checks that HEAD is a clean checkout of a semver tag
 (`check-release-tag.sh`: `v1.2.3` or `v1.2.3-beta.1`, nothing untagged or
-dirty), then cleans, builds, runs `make test`, and uploads `python.tar.gz` to
-the project and bucket pinned in
+dirty), then cleans, builds, signs and notarizes (macOS targets), runs
+`make test`, and uploads `python.tar.gz` to the project and bucket pinned in
 `deploy/bluectl/<env>/<os>-<arch>`; do not run `dist.sh` directly. Published
 versions are immutable, so if a target fails, fix it and run the
 `dist-<env>-<os>-<arch>` targets that did not upload, e.g.
 `make dist-prod-linux-amd64`.
 
-Nothing is codesigned or notarized. Rune removes the `com.apple.quarantine`
-attribute when it installs a package, so Gatekeeper never assesses these
-binaries, and the arm64 ones carry the ad-hoc signature their linker adds.
+macOS binaries must be signed with the Developer ID: Rune runs with the
+hardened runtime and library validation, so it refuses to load a
+`tree-sitter.so` signed by any other team, and an ad-hoc signed one fails with
+"different Team IDs". `make test` fails a macOS tarball unless every binary is
+signed by `YYZRWD888J` with the hardened runtime. Notarization fails the build
+unless Apple reports `status: Accepted`.
 
-Linux targets build on any host; macOS targets need macOS. To check a target
-without publishing it:
+`dist-<env>-all` and the macOS `dist-*` targets only run on macOS; Linux targets
+also build on Linux. To check a target without publishing it:
 
 ```sh
 make clean
-make test TARGET_OS=linux TARGET_ARCH=arm64
+make notarize python.tar.gz test TARGET_OS=darwin TARGET_ARCH=arm64
 ```
 
 ### OS floors

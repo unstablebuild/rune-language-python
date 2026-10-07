@@ -1,8 +1,15 @@
 SRC=tree-sitter-python nvim-treesitter rune
 PKG_STAMP=.pkg.stamp
 TAR=python.tar.gz
+NOTARIZE_ZIP=python-notarize.zip
 GTAR=$(if $(filter Darwin,$(UNAME)),gtar,tar)
 UNAME=$(shell uname)
+# Rune runs with the hardened runtime and library validation, so macOS only
+# lets it dlopen a tree-sitter.so signed by Rune's own team; an ad-hoc signed
+# one fails with "different Team IDs". scripts/test.sh enforces it.
+TEAM_ID=YYZRWD888J
+CODESIGN_IDENTITY=Developer ID Application: Unstable Build, LLC. ($(TEAM_ID))
+NOTARY_PROFILE=notary-profile
 
 # Oldest supported macOS (docs.rune.build Prerequisites). Without an explicit
 # minimum, clang stamps the build host's SDK version into tree-sitter.so, so a
@@ -35,14 +42,10 @@ TY_VERSION=0.0.51
 # extensions.python.config.debugpy (scripts/test.sh enforces agreement).
 DEBUGPY_VERSION=1.8.17
 
-# macOS releases are built on macOS, whose clang builds their tree-sitter.so.
-# Linux releases build on any host: extension_python is built with cgo off,
-# the Astral tools are downloaded per target, and tree-sitter.so is cross
-# compiled with zig cc.
-#
-# Nothing is codesigned or notarized: Rune strips com.apple.quarantine from
-# installed packages, so Gatekeeper never assesses them, and arm64 binaries
-# carry the ad-hoc signature their linker adds.
+# macOS releases are built on macOS, which builds their tree-sitter.so with
+# clang, then signs and notarizes them. Linux releases build on any host:
+# extension_python is built with cgo off, the Astral tools are downloaded per
+# target, and tree-sitter.so is cross compiled with zig cc.
 HOST_OS=$(shell uname | tr '[:upper:]' '[:lower:]')
 HOST_ARCH=$(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
 TARGET_OS?=$(HOST_OS)
@@ -66,7 +69,7 @@ DIST_TARGETS := \
 	dist-staging-linux-arm64  dist-staging-linux-amd64
 DIST_ALL_TARGETS := dist-prod-all dist-staging-all
 
-.PHONY: $(DIST_TARGETS) $(DIST_ALL_TARGETS) check-release-tag clean toolchain test pkg
+.PHONY: $(DIST_TARGETS) $(DIST_ALL_TARGETS) check-release-tag clean sign notarize notary-credentials toolchain test pkg
 default: $(TAR)
 
 pkg: $(PKG_STAMP)
@@ -118,21 +121,45 @@ endif
 	cp config.yaml pkg
 	@touch $(PKG_STAMP)
 
-$(TAR): $(PKG_STAMP)
+ifeq ($(TARGET_OS),darwin)
+sign: $(PKG_STAMP)
+	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" \
+		pkg/bin/uv pkg/bin/uvx pkg/bin/ruff pkg/bin/ty pkg/bin/extension_python pkg/lib/tree-sitter.so
+
+$(NOTARIZE_ZIP): sign
+	rm -f $(NOTARIZE_ZIP)
+	zip $(NOTARIZE_ZIP) pkg/bin/uv pkg/bin/uvx pkg/bin/ruff pkg/bin/ty pkg/bin/extension_python pkg/lib/tree-sitter.so
+
+notarize: $(NOTARIZE_ZIP)
+	@# notarytool can exit 0 for a rejected submission, so require Accepted.
+	@out=$$(xcrun notarytool submit $(NOTARIZE_ZIP) --keychain-profile "$(NOTARY_PROFILE)" --wait) || { echo "$$out"; exit 1; }; \
+	 echo "$$out"; \
+	 echo "$$out" | grep -Eq '^[[:space:]]*status: Accepted' || { echo "error: notarization was not accepted" >&2; exit 1; }
+else
+sign: $(PKG_STAMP)
+	@echo "Skipping codesign (not a macOS target)"
+
+notarize: sign
+	@echo "Skipping notarization (not a macOS target)"
+endif
+
+$(TAR): $(PKG_STAMP) sign
 	cd pkg && $(GTAR) --no-xattrs --no-acls -czvf ../$(TAR) .
 
 # Verify release-tarball properties (no .go source leaks, binaries built for the
-# target os/arch and within the documented OS floors, etc).
+# target os/arch and within the documented OS floors, macOS binaries signed by
+# $(TEAM_ID), etc).
 test: $(TAR)
-	TAR=$(TAR) TARGET_OS=$(TARGET_OS) TARGET_ARCH=$(TARGET_ARCH) ./scripts/test.sh
+	TAR=$(TAR) NOTARIZE_ZIP=$(NOTARIZE_ZIP) TEAM_ID=$(TEAM_ID) \
+	TARGET_OS=$(TARGET_OS) TARGET_ARCH=$(TARGET_ARCH) ./scripts/test.sh
 
 # check-release-tag aborts before any build runs when HEAD does not carry a
 # publishable release tag (clean, canonical semver, actually tagged).
 check-release-tag:
 	@./check-release-tag.sh
 
-# dist-<env>-<os>-<arch>: build, test, and upload to the bluectl project-id and
-# bucket pinned by
+# dist-<env>-<os>-<arch>: build, sign and notarize (macOS targets), test, and
+# upload to the bluectl project-id and bucket pinned by
 # deploy/bluectl/<env>/<os>-<arch>/config. Pattern stem is <env>-<os>-<arch>,
 # e.g. "prod-darwin-arm64". The build is driven through a recursive make so
 # TARGET_OS and TARGET_ARCH are set before the $(TAR) prerequisite chain is
@@ -143,24 +170,34 @@ $(DIST_TARGETS): dist-%: check-release-tag
 	 arch=$$(echo $* | cut -d- -f3); \
 	 set -e; \
 	 if [ "$$os" = darwin ] && [ "$(HOST_OS)" != darwin ]; then \
-	   echo "error: $@ must run on macOS" >&2; \
+	   echo "error: $@ must run on macOS, which signs and notarizes it" >&2; \
 	   exit 1; \
 	 fi; \
 	 $(MAKE) clean; \
-	 $(MAKE) test TARGET_OS=$$os TARGET_ARCH=$$arch; \
+	 $(MAKE) notarize $(TAR) test TARGET_OS=$$os TARGET_ARCH=$$arch; \
 	 BLUECTL_CONFIG_DIR=$(BLUECTL_CONFIG_ROOT)/$$env/$$os-$$arch \
 	 BLUE_TARGET_OS=$$os BLUE_TARGET_ARCH=$$arch ./dist.sh
 
 # dist-<env>-all: dist-<env>-<os>-<arch> for all four targets, one after the
-# other since they share pkg/ and $(TAR). Run it on macOS, which the darwin
-# targets need. Published versions are immutable, so if a target fails, fix it
-# and run the targets that did not upload individually.
+# other since they share pkg/ and $(TAR). It only runs on macOS, which the
+# darwin targets need, so a Linux host fails before uploading anything.
+# Published versions are immutable, so if a target fails, fix it and run the
+# targets that did not upload individually.
 $(DIST_ALL_TARGETS): dist-%-all: check-release-tag
-	@set -e; for target in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do \
+	@set -e; \
+	 if [ "$(HOST_OS)" != darwin ]; then \
+	   echo "error: $@ must run on macOS, which signs and notarizes the darwin targets" >&2; \
+	   exit 1; \
+	 fi; \
+	 for target in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do \
 	   $(MAKE) dist-$*-$$target; \
 	 done
 
+notary-credentials:
+	xcrun notarytool store-credentials "$(NOTARY_PROFILE)" --team-id "$(TEAM_ID)"
+
 clean:
 	rm -rf $(TAR)
+	rm -rf $(NOTARIZE_ZIP)
 	rm -rf $(PKG_STAMP)
 	rm -rf pkg/
