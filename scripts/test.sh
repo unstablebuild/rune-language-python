@@ -20,6 +20,9 @@
 #      versions, so a release built on a newer host silently raises the floor.
 #      Needs file, objdump (GNU binutils, or the LLVM one Xcode ships, so a
 #      Linux tarball can be checked on macOS) and, for macOS, otool.
+#   5. macOS targets: Rune.app can load the package. Every Mach-O file is
+#      signed by the $TEAM_ID Developer ID, and tree-sitter.so loads into a
+#      process signed like Rune.app (scripts/macos-signing.sh check).
 set -euo pipefail
 
 TAR="${TAR:-python.tar.gz}"
@@ -117,6 +120,10 @@ darwin-arm64) want_format="Mach-O" want_arch="arm64" ;;
 	exit 1
 	;;
 esac
+if [ "$TARGET_OS" = darwin ]; then
+	: "${TEAM_ID:?TEAM_ID is not set; run 'make test'}"
+	: "${CODESIGN_IDENTITY:?CODESIGN_IDENTITY is not set; run 'make test'}"
+fi
 
 extracted="$(mktemp -d)"
 trap 'rm -rf "$extracted"' EXIT
@@ -178,3 +185,8 @@ if [ "$failed" -ne 0 ]; then
 fi
 
 echo "ok: $binaries binaries are $TARGET_OS-$TARGET_ARCH and within the OS floors (glibc $GLIBC_FLOOR, macOS $MACOS_FLOOR)"
+
+# Guard 5.
+if [ "$TARGET_OS" = darwin ]; then
+	"$(dirname "$0")/macos-signing.sh" check "$extracted" tree_sitter_python
+fi

@@ -3,6 +3,16 @@ PKG_STAMP=.pkg.stamp
 TAR=python.tar.gz
 GTAR=$(if $(filter Darwin,$(UNAME)),gtar,tar)
 UNAME=$(shell uname)
+# Rune runs with the hardened runtime and library validation, so macOS only
+# lets it dlopen a tree-sitter.so signed by Rune's own team; an ad-hoc signed
+# one fails with "different Team IDs". scripts/macos-signing.sh signs the
+# macOS packages, and scripts/test.sh runs its check. Packages are not
+# notarized: Rune installs them without the quarantine attribute, so
+# Gatekeeper never assesses them.
+TEAM_ID=YYZRWD888J
+CODESIGN_IDENTITY=Developer ID Application: Unstable Build, LLC. ($(TEAM_ID))
+MACOS_SIGNING=TEAM_ID=$(TEAM_ID) CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
+	TARGET_ARCH=$(TARGET_ARCH) ./scripts/macos-signing.sh
 
 # Oldest supported macOS (docs.rune.build Prerequisites). Without an explicit
 # minimum, clang stamps the build host's SDK version into tree-sitter.so, so a
@@ -35,14 +45,10 @@ TY_VERSION=0.0.51
 # extensions.python.config.debugpy (scripts/test.sh enforces agreement).
 DEBUGPY_VERSION=1.8.17
 
-# macOS releases are built on macOS, whose clang builds their tree-sitter.so.
-# Linux releases build on any host: extension_python is built with cgo off,
-# the Astral tools are downloaded per target, and tree-sitter.so is cross
-# compiled with zig cc.
-#
-# Nothing is codesigned or notarized: Rune strips com.apple.quarantine from
-# installed packages, so Gatekeeper never assesses them, and arm64 binaries
-# carry the ad-hoc signature their linker adds.
+# macOS releases are built on macOS, which builds their tree-sitter.so with
+# clang, then signs them. Linux releases build on any host:
+# extension_python is built with cgo off, the Astral tools are downloaded per
+# target, and tree-sitter.so is cross compiled with zig cc.
 HOST_OS=$(shell uname | tr '[:upper:]' '[:lower:]')
 HOST_ARCH=$(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
 TARGET_OS?=$(HOST_OS)
@@ -66,7 +72,7 @@ DIST_TARGETS := \
 	dist-staging-linux-arm64  dist-staging-linux-amd64
 DIST_ALL_TARGETS := dist-prod-all dist-staging-all
 
-.PHONY: $(DIST_TARGETS) $(DIST_ALL_TARGETS) check-release-tag clean toolchain test pkg
+.PHONY: $(DIST_TARGETS) $(DIST_ALL_TARGETS) check-release-tag check-macos clean sign toolchain test pkg
 default: $(TAR)
 
 pkg: $(PKG_STAMP)
@@ -118,43 +124,57 @@ endif
 	cp config.yaml pkg
 	@touch $(PKG_STAMP)
 
-$(TAR): $(PKG_STAMP)
+ifeq ($(TARGET_OS),darwin)
+# Every Mach-O file in pkg/, found by scanning, so a new binary is signed too.
+sign: $(PKG_STAMP)
+	$(MACOS_SIGNING) sign pkg
+else
+sign: $(PKG_STAMP)
+	@echo "Skipping codesign (not a macOS target)"
+endif
+
+$(TAR): $(PKG_STAMP) sign
 	cd pkg && $(GTAR) --no-xattrs --no-acls -czvf ../$(TAR) .
 
 # Verify release-tarball properties (no .go source leaks, binaries built for the
-# target os/arch and within the documented OS floors, etc).
+# target os/arch and within the documented OS floors, macOS packages loadable
+# by Rune.app, etc).
 test: $(TAR)
-	TAR=$(TAR) TARGET_OS=$(TARGET_OS) TARGET_ARCH=$(TARGET_ARCH) ./scripts/test.sh
+	TAR=$(TAR) TEAM_ID=$(TEAM_ID) CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" \
+	TARGET_OS=$(TARGET_OS) TARGET_ARCH=$(TARGET_ARCH) ./scripts/test.sh
 
 # check-release-tag aborts before any build runs when HEAD does not carry a
 # publishable release tag (clean, canonical semver, actually tagged).
 check-release-tag:
 	@./check-release-tag.sh
 
-# dist-<env>-<os>-<arch>: build, test, and upload to the bluectl project-id and
-# bucket pinned by
+# check-macos fails before any build work unless this host can sign: macOS and
+# the Developer ID identity.
+check-macos:
+	@$(MACOS_SIGNING) preflight
+
+# dist-<env>-<os>-<arch>: build, sign (macOS targets), test, and upload to the
+# bluectl project-id and bucket pinned by
 # deploy/bluectl/<env>/<os>-<arch>/config. Pattern stem is <env>-<os>-<arch>,
 # e.g. "prod-darwin-arm64". The build is driven through a recursive make so
 # TARGET_OS and TARGET_ARCH are set before the $(TAR) prerequisite chain is
 # evaluated.
+$(filter %-darwin-arm64 %-darwin-amd64,$(DIST_TARGETS)) $(DIST_ALL_TARGETS): check-macos
 $(DIST_TARGETS): dist-%: check-release-tag
 	@env=$$(echo $* | cut -d- -f1); \
 	 os=$$(echo $*  | cut -d- -f2); \
 	 arch=$$(echo $* | cut -d- -f3); \
 	 set -e; \
-	 if [ "$$os" = darwin ] && [ "$(HOST_OS)" != darwin ]; then \
-	   echo "error: $@ must run on macOS" >&2; \
-	   exit 1; \
-	 fi; \
 	 $(MAKE) clean; \
 	 $(MAKE) test TARGET_OS=$$os TARGET_ARCH=$$arch; \
 	 BLUECTL_CONFIG_DIR=$(BLUECTL_CONFIG_ROOT)/$$env/$$os-$$arch \
 	 BLUE_TARGET_OS=$$os BLUE_TARGET_ARCH=$$arch ./dist.sh
 
 # dist-<env>-all: dist-<env>-<os>-<arch> for all four targets, one after the
-# other since they share pkg/ and $(TAR). Run it on macOS, which the darwin
-# targets need. Published versions are immutable, so if a target fails, fix it
-# and run the targets that did not upload individually.
+# other since they share pkg/ and $(TAR). It only runs on macOS, which the
+# darwin targets need, so a Linux host fails before uploading anything.
+# Published versions are immutable, so if a target fails, fix it and run the
+# targets that did not upload individually.
 $(DIST_ALL_TARGETS): dist-%-all: check-release-tag
 	@set -e; for target in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do \
 	   $(MAKE) dist-$*-$$target; \
