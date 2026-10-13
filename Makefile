@@ -125,7 +125,8 @@ endif
 	@touch $(PKG_STAMP)
 
 ifeq ($(TARGET_OS),darwin)
-# Every Mach-O file in pkg/, found by scanning, so a new binary is signed too.
+# Only tree-sitter.so, the one file Rune loads into its own process; the other
+# binaries keep their linker or vendor signatures (scripts/macos-signing.sh).
 sign: $(PKG_STAMP)
 	$(MACOS_SIGNING) sign pkg
 else

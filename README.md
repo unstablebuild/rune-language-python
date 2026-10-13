@@ -42,14 +42,16 @@ versions are immutable, so if a target fails, fix it and run the
 `dist-<env>-<os>-<arch>` targets that did not upload, e.g.
 `make dist-prod-linux-amd64`.
 
-macOS binaries must be signed with the Developer ID: Rune runs with the
-hardened runtime and library validation, so it refuses to load a
+The macOS `tree-sitter.so` must be signed with the Developer ID: Rune runs with
+the hardened runtime and library validation, so it refuses to load a
 `tree-sitter.so` signed by any other team, and an ad-hoc signed one fails with
-"different Team IDs". `make test` fails a macOS tarball unless every Mach-O
-file is signed by `YYZRWD888J` and `tree-sitter.so` loads into a process
-signed like Rune.app (`scripts/macos-signing.sh`, shared by every language
-repo). Packages are not notarized: Rune installs them without the quarantine
-attribute, so Gatekeeper never assesses them.
+"different Team IDs". The other binaries run as separate processes and keep
+their linker or vendor signatures. `make test` fails a macOS tarball unless
+`tree-sitter.so` is signed by `YYZRWD888J` and loads into a process signed
+like Rune.app, and every binary is intact and validly signed
+(`scripts/macos-signing.sh`, shared by every language repo). Packages are not
+notarized: Rune installs them without the quarantine attribute, so Gatekeeper
+never assesses them.
 
 `dist-<env>-all` and the macOS `dist-*` targets only run on macOS with the
 signing identity, and fail before building otherwise; Linux targets also build

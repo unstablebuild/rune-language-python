@@ -20,9 +20,10 @@
 #      versions, so a release built on a newer host silently raises the floor.
 #      Needs file, objdump (GNU binutils, or the LLVM one Xcode ships, so a
 #      Linux tarball can be checked on macOS) and, for macOS, otool.
-#   5. macOS targets: Rune.app can load the package. Every Mach-O file is
-#      signed by the $TEAM_ID Developer ID, and tree-sitter.so loads into a
-#      process signed like Rune.app (scripts/macos-signing.sh check).
+#   5. macOS targets: Rune.app can load the package. tree-sitter.so is signed
+#      by the $TEAM_ID Developer ID and loads into a process signed like
+#      Rune.app, and every Mach-O file is intact and validly signed
+#      (scripts/macos-signing.sh check).
 set -euo pipefail
 
 TAR="${TAR:-python.tar.gz}"
