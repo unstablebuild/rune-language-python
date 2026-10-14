@@ -154,28 +154,39 @@ check-release-tag:
 check-macos:
 	@$(MACOS_SIGNING) preflight
 
+# The version dist.sh uploads as.
+RELEASE_TAG = $(shell git describe --tags --dirty)
+
 # dist-<env>-<os>-<arch>: build, sign (macOS targets), test, and upload to the
 # bluectl project-id and bucket pinned by
 # deploy/bluectl/<env>/<os>-<arch>/config. Pattern stem is <env>-<os>-<arch>,
-# e.g. "prod-darwin-arm64". The build is driven through a recursive make so
-# TARGET_OS and TARGET_ARCH are set before the $(TAR) prerequisite chain is
-# evaluated.
+# e.g. "prod-darwin-arm64". Published versions are immutable, so a target whose
+# version is already in its bucket is skipped before building; that lets
+# dist-<env>-all resume after a partial run. The build is driven through a
+# recursive make so TARGET_OS and TARGET_ARCH are set before the $(TAR)
+# prerequisite chain is evaluated.
 $(filter %-darwin-arm64 %-darwin-amd64,$(DIST_TARGETS)) $(DIST_ALL_TARGETS): check-macos
 $(DIST_TARGETS): dist-%: check-release-tag
 	@env=$$(echo $* | cut -d- -f1); \
 	 os=$$(echo $*  | cut -d- -f2); \
 	 arch=$$(echo $* | cut -d- -f3); \
+	 cfg=$(BLUECTL_CONFIG_ROOT)/$$env/$$os-$$arch; \
 	 set -e; \
+	 published=$$(bluectl -c $$cfg release list -F '{{.Version}}' python); \
+	 if printf '%s\n' "$$published" | grep -qxF '$(RELEASE_TAG)'; then \
+		echo "python@$(RELEASE_TAG) is already published for $$env $$os/$$arch; skipping"; \
+		exit 0; \
+	 fi; \
 	 $(MAKE) clean; \
 	 $(MAKE) test TARGET_OS=$$os TARGET_ARCH=$$arch; \
-	 BLUECTL_CONFIG_DIR=$(BLUECTL_CONFIG_ROOT)/$$env/$$os-$$arch \
+	 BLUECTL_CONFIG_DIR=$$cfg \
 	 BLUE_TARGET_OS=$$os BLUE_TARGET_ARCH=$$arch ./dist.sh
 
 # dist-<env>-all: dist-<env>-<os>-<arch> for all four targets, one after the
 # other since they share pkg/ and $(TAR). It only runs on macOS, which the
 # darwin targets need, so a Linux host fails before uploading anything.
-# Published versions are immutable, so if a target fails, fix it and run the
-# targets that did not upload individually.
+# Targets already published at this version are skipped, so after a failure,
+# fix it and rerun dist-<env>-all.
 $(DIST_ALL_TARGETS): dist-%-all: check-release-tag
 	@set -e; for target in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do \
 	   $(MAKE) dist-$*-$$target; \
