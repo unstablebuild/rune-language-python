@@ -120,7 +120,10 @@ endif
 	# socket and resolves no hostnames; the one visible difference is that the
 	# pure-Go os/user resolves the current user from $$USER/$$HOME or
 	# /etc/passwd rather than NSS.
-	cd rune && CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -o $(PWD)/pkg/bin/extension_python ./cmd/extension_python
+	# debug.Tag is the version Rune shows when asking to run the extension.
+	cd rune && CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build \
+		-ldflags="-X unstable.build/rune/internal/debug.Tag=$(RELEASE_TAG)" \
+		-o $(PWD)/pkg/bin/extension_python ./cmd/extension_python
 	cp config.yaml pkg
 	@touch $(PKG_STAMP)
 
